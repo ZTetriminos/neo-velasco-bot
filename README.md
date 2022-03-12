@@ -1,3 +1,20 @@
+# Forked from [ClockVapor](https://github.com/ClockVapor) 's [markov-telegram-bot](https://github.com/ClockVapor/markov-telegram-bot)
+Updated Kotlin version as well as dependencies since they were either deprecated or weren't functional with other libraries.
+Added support for Heroku deployment. For the bot configuration you must make a `config.json` with the following syntax:
+```json
+{
+  "telegramBotToken": "BOT_TOKEN",
+  "webhookURL": "WEBHOOK_URL",
+  "databaseName": "DATABASE_NAME",
+  "replyFrecuence": 90,
+  "chatFrecuence": 10
+}
+```
+Where `telegramBotToken` is the bot token, `webhookURL` is the URL to your Heroku app (`https://app-name.herokuapp.com`), 
+`databaseName` mongoDB database name (currently not in use), `replyFrequence` is a 0 to 100 value which represents the probability
+of the bot to reply to a message in which the bot was quoted, `chatFrequence` which is the same as the last value, but when the bot
+isn't quoted. When the bot is mentioned via `@` it always replies.
+
 # markov-telegram-bot
 
 `markov-telegram-bot` is a Telegram bot that builds a Markov chain for each user in groups it is added to, and it uses those Markov
