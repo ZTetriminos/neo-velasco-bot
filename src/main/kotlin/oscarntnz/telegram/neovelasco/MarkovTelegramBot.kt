@@ -1,7 +1,6 @@
-package clockvapor.telegram.markov
+package oscarntnz.telegram.neovelasco
 
 import clockvapor.markov.MarkovChain
-import com.fasterxml.jackson.databind.ObjectMapper
 import com.github.kotlintelegrambot.Bot
 import com.github.kotlintelegrambot.bot
 import com.github.kotlintelegrambot.dispatch
@@ -25,7 +24,7 @@ import kotlin.random.Random
 class MarkovTelegramBot(private val token: String, private val botPort: Int,
                         private val webhookURL: String, private val databaseURL: String,
                         private val databaseName: String, private val replyFrecuence: Int,
-                        private val chatFrequence: Int) {
+                        private val chatFrequence: Int, private val ownerChatId: ChatId) {
     private var myId: Long? = null
     private lateinit var myUsername: String
     private val wantToDeleteOwnData = mutableMapOf<String, MutableSet<String>>()
@@ -34,6 +33,8 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
     private val rand = Random(Date().time)
     private lateinit var client: MongoClient
     private lateinit var database: MongoDatabase
+    private lateinit var markovFunctions: MarkovFunctions
+    private lateinit var botInstace: Bot
 
     companion object {
         private const val YES: String = "yes"
@@ -43,32 +44,40 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
         fun main(args: Array<String>) {
             val config = Config.read(CONFIG_FILE_PATH)
 
-            MarkovTelegramBot(config.telegramBotToken,  System.getenv("PORT").toInt(), config.webhookURL,
-                System.getenv("MONGODB_URI"), config.databaseName, config.replyFrecuence, config.chatFrecuence)
-                .run()
+            val bot = MarkovTelegramBot(config.telegramBotToken,  System.getenv("PORT").toInt(), config.webhookURL,
+            System.getenv("MONGODB_URI"), config.databaseName, config.replyFrecuence, config.chatFrecuence,
+            ChatId.fromId(config.ownerChatId))
+
+            try {
+                bot.run()
+            }
+            catch (e: Exception) {
+                e.message?.let { bot.notifyException(e.message!!) }
+            }
         }
     }
 
     fun run() {
         client = KMongo.createClient(databaseURL)
         database = client.getDatabase(databaseName)
+        markovFunctions = MarkovFunctions(database)
 
-        val bot = bot {
+        botInstace = bot {
             this.token = this@MarkovTelegramBot.token
             dispatch {
                 addHandler(object : Handler {
                     override fun checkUpdate(update: Update) = update.message != null
-                    override fun handleUpdate(bot: Bot, update: Update) = this@MarkovTelegramBot.handleUpdate(bot, update)
+                    override fun handleUpdate(bot: Bot, update: Update) = this@MarkovTelegramBot.handleUpdate(update)
                 })
             }
 
             webhook {
-                url = "${webhookURL}/${this@MarkovTelegramBot.token}"
+                url = "$webhookURL/${this@MarkovTelegramBot.token}"
             }
         }
-        bot.startWebhook()
+        botInstace.startWebhook()
 
-        val me = bot.getMe()
+        val me = botInstace.getMe()
         val id = me.first?.body()?.result?.id
         val username = me.first?.body()?.result?.username
 
@@ -80,70 +89,76 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
         log("Bot username = $myUsername")
         log("Bot started")
 
-        embeddedServer(Netty, port = this@MarkovTelegramBot.botPort) {
+        val server = embeddedServer(Netty, port = this@MarkovTelegramBot.botPort) {
             routing {
                 post("/${this@MarkovTelegramBot.token}") {
                     val txt: String = call.receiveText()
-                    bot.processUpdate(txt)
+                    botInstace.processUpdate(txt)
                     call.respond(HttpStatusCode.OK)
                 }
             }
-        }.start(wait = true)
+        }
 
+        this.notifyStartup()
+        server.start(wait = true)
     }
 
-    private fun handleUpdate(bot: Bot, update: Update) {
+    private fun handleUpdate(update: Update) {
         if(update.message != null) {
-            tryOrLog { handleMessage(bot, update.message!!) }
+            tryOrLog { handleMessage(update.message!!) }
+
+            log(update.toString())
         }
     }
 
-    private fun handleMessage(bot: Bot, message: Message) {
+    private fun handleMessage(message: Message) {
         val chatId = message.chat.id.toString()
 
         message.newChatMembers?.takeIf { it[0].id == myId!! }?.let { log("Added to group $chatId") }
         message.leftChatMember?.takeIf { it.id == myId!! }?.let {
             log("Removed from group $chatId")
 
-            tryOrLog { deleteChat(chatId) }
+            tryOrLog { markovFunctions.deleteChat(chatId) }
         }
 
-        message.from?.let { handleMessage(bot, message, chatId, it) }
+        message.from?.let { handleMessage(message, chatId, it) }
     }
 
-    private fun handleMessage(bot: Bot, message: Message, chatId: String, from: User) {
+    private fun handleMessage(message: Message, chatId: String, from: User) {
         val senderId = from.id.toString()
 
-        from.username?.let { tryOrLog { storeUsername(it, senderId) } }
+        from.username?.let { tryOrLog { markovFunctions.storeUsername(it, senderId) } }
 
         val text = message.text
         val caption = message.caption
 
         if (text != null)
-            handleMessage(bot, message, chatId, from, senderId, text)
+            handleMessage(message, chatId, from, senderId, text)
         else if (caption != null)
-            handleMessage(bot, message, chatId, from, senderId, caption)
+            handleMessage(message, chatId, from, senderId, caption)
         else if (message.animation != null || message.audio != null || message.photo != null || message.sticker != null)
-            respond(bot, message, chatId, from)
+            respond(message, chatId, from)
     }
 
-    private fun handleMessage(bot: Bot, message: Message, chatId: String, from: User, senderId: String, text: String) {
-        var shouldAnalyzeMessage = handleQuestionResponse(bot, message, chatId, senderId, text)
+    private fun handleMessage(message: Message, chatId: String, from: User, senderId: String, text: String) {
+        var shouldAnalyzeMessage = handleQuestionResponse(message, chatId, senderId, text)
 
         if (shouldAnalyzeMessage) {
             message.entities?.takeIf { it.isNotEmpty() }?.let {
-                shouldAnalyzeMessage = handleMessage(bot, message, chatId, from, senderId, text, it)
+                shouldAnalyzeMessage = handleMessage(message, chatId, from, senderId, text, it)
             }
 
             if (message.entities.isNullOrEmpty())
-                respond(bot, message, chatId, from)
+                respond(message, chatId, from)
         }
+
         if (shouldAnalyzeMessage)
-            analyzeMessage(chatId, senderId, text)
+            markovFunctions.analyzeMessage(chatId, senderId, text)
     }
 
-    private fun handleMessage(bot: Bot, message: Message, chatId: String, from: User, senderId: String, text: String,
-        entities: List<MessageEntity>): Boolean {
+    @Suppress("SameParameterValue")
+    private fun handleMessage(message: Message, chatId: String, from: User, senderId: String, text: String,
+                              entities: List<MessageEntity>): Boolean {
         var shouldAnalyzeMessage = true
         val firstEntity = entities[0]
 
@@ -151,35 +166,37 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
             shouldAnalyzeMessage = false
             val command = getMessageEntityText(message, firstEntity)
 
+            @Suppress("SameParameterValue")
             when {
                 matchesCommand(command, "msg") ->
-                    doMessageCommand(bot, message, chatId, text, entities)
+                    doMessageCommand(message, chatId, text, entities)
 
                 matchesCommand(command, "msgall") ->
-                    doMessageTotalCommand(bot, message, chatId, text, entities)
+                    doMessageTotalCommand(message, chatId, text, entities)
 
                 matchesCommand(command, "stats") ->
-                    doStatisticsCommand(bot, message, chatId, text)
+                    doStatisticsCommand(message, chatId)
 
                 matchesCommand(command, "deletemydata") ->
-                    doDeleteMyDataCommand(bot, message, chatId, senderId)
+                    doDeleteMyDataCommand(message, chatId, senderId)
 
                 matchesCommand(command, "deleteuserdata") ->
-                    doDeleteUserDataCommand(bot, message, chatId, from, senderId, entities)
+                    doDeleteUserDataCommand(message, chatId, from, senderId, entities)
 
                 matchesCommand(command, "deletemessagedata") ->
-                    doDeleteMessageDataCommand(bot, message, chatId, senderId)
+                    doDeleteMessageDataCommand(message, chatId, senderId)
 
                 matchesCommand(command, "insult") ->
-                    sendAndMention(bot, message, "TU PUTA MADRE, AMIC", entities)
+                    sendAndMention(message, "TU PUTA MADRE, AMIC", entities)
             }
-        } else if (isBotMentioned(message, entities))
-            respond(bot, message, chatId, from, true)
+        }
+        else if (isBotMentioned(message, entities))
+            respond(message, chatId, from, true)
 
         return shouldAnalyzeMessage
     }
 
-    private fun handleQuestionResponse(bot: Bot, message: Message, chatId: String, senderId: String,
+    private fun handleQuestionResponse(message: Message, chatId: String, senderId: String,
                                        text: String): Boolean {
         var shouldAnalyzeMessage = true
         val deleteOwnData = wantToDeleteOwnData[chatId]
@@ -187,7 +204,7 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
         val deleteMessageData = wantToDeleteMessageData[chatId]
 
         if (deleteOwnData?.contains(senderId) == true) {
-            bot.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
+            this.botInstace.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
 
             shouldAnalyzeMessage = false
             deleteOwnData -= senderId
@@ -196,7 +213,7 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
                 wantToDeleteOwnData -= chatId
 
             val replyText = if (text.trim().lowercase() == YES) {
-                if (tryOrDefault(false) { deleteMarkov(chatId, senderId) })
+                if (tryOrDefault(false) { markovFunctions.deleteMarkov(chatId, senderId) })
                     "Okay. I deleted your Markov chain data in this group."
                 else
                     "Hmm. I tried to delete your Markov chain data in this group, but something went wrong."
@@ -204,10 +221,10 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
             else
                 "Okay. I won't delete your Markov chain data in this group then."
 
-            reply(bot, message, replyText)
+            reply(message, replyText)
         }
         else if (deleteUserData?.contains(senderId) == true) {
-            bot.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
+            this.botInstace.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
 
             shouldAnalyzeMessage = false
 
@@ -218,7 +235,7 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
                 wantToDeleteUserData -= chatId
 
             val replyText = if (text.trim().lowercase() == YES) {
-                if (tryOrDefault(false) { deleteMarkov(chatId, userIdToDelete) })
+                if (tryOrDefault(false) { markovFunctions.deleteMarkov(chatId, userIdToDelete) })
                     "Okay. I deleted their Markov chain data in this group."
                 else
                     "Hmm. I tried to delete their Markov chain data in this group, but something went wrong."
@@ -226,10 +243,10 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
             else
                 "Okay. I won't delete their Markov chain data in this group then."
 
-            reply(bot, message, replyText)
+            reply(message, replyText)
         }
         else if (deleteMessageData?.contains(senderId) == true) {
-            bot.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
+            this.botInstace.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
 
             shouldAnalyzeMessage = false
 
@@ -238,8 +255,9 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
 
             if (deleteMessageData.isEmpty())
                 wantToDeleteMessageData -= chatId
+
             val replyText = if (text.trim().lowercase() == YES) {
-                if (trySuccessful { deleteMessage(chatId, senderId, messageToDelete) })
+                if (trySuccessful { markovFunctions.deleteMessage(chatId, senderId, messageToDelete) })
                     "Okay. I deleted that message from your Markov chain data in this group."
                 else
                     "Hmm. I tried to delete that message from your Markov chain data in this group, but something " +
@@ -248,18 +266,19 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
             else
                 "Okay. I won't delete that message from your Markov chain data in this group then."
 
-            reply(bot, message, replyText)
+            reply(message, replyText)
         }
 
         return shouldAnalyzeMessage
     }
 
-    private fun doMessageCommand(bot: Bot, message: Message, chatId: String, text: String,
+    private fun doMessageCommand(message: Message, chatId: String, text: String,
                                  entities: List<MessageEntity>) {
-        bot.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
+        this.botInstace.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
         var parseMode: ParseMode? = null
 
-        val replyText = if (entities.size < 2) null
+        val replyText = if (entities.size < 2)
+            null
         else {
             val mention = entities[1]
 
@@ -281,9 +300,10 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
                         .takeIf { it.isNotBlank() }?.split(whitespaceRegex).orEmpty()
 
                     when (remainingTexts.size) {
-                        0 -> generateMessage(chatId, mentionUserId)
+                        0 -> markovFunctions.generateMessage(chatId, mentionUserId)
 
-                        1 -> generateMessage(chatId, mentionUserId, remainingTexts.first())?.let { result ->
+                        1 -> markovFunctions.generateMessage(chatId, mentionUserId, remainingTexts.first())
+                            ?.let { result ->
                             when (result) {
                                 is MarkovChain.GenerateWithSeedResult.NoSuchSeed ->
                                     "<no such seed exists for $formattedUsername>"
@@ -295,25 +315,26 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
                         else -> "<expected only one seed word>"
                     }
                 } ?: "<no data available for $formattedUsername>"
-            } else
+            }
+            else
                 null
         } ?: "<expected a user mention>"
 
-        reply(bot, message, replyText, parseMode)
+        reply(message, replyText, parseMode)
     }
 
-    private fun doMessageTotalCommand(bot: Bot, message: Message, chatId: String, text: String,
+    private fun doMessageTotalCommand(message: Message, chatId: String, text: String,
                                       entities: List<MessageEntity>) {
-        bot.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
+        this.botInstace.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
 
         val command = entities[0]
         val remainingTexts = text.substring(command.offset + command.length).trim()
             .takeIf { it.isNotBlank() }?.split(whitespaceRegex).orEmpty()
 
         val replyText = when (remainingTexts.size) {
-            0 -> generateMessageTotal(chatId)
+            0 -> markovFunctions.generateMessageTotal(chatId)
 
-            1 -> generateMessageTotal(chatId, remainingTexts.first())?.let { result ->
+            1 -> markovFunctions.generateMessageTotal(chatId, remainingTexts.first())?.let { result ->
                 when (result) {
                     is MarkovChain.GenerateWithSeedResult.NoSuchSeed ->
                         "<no such seed exists>"
@@ -325,12 +346,12 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
             else -> "<expected only one seed word>"
         } ?: "<no data available>"
 
-        reply(bot, message, replyText)
+        reply(message, replyText)
     }
 
-    private fun doStatisticsCommand(bot: Bot, message: Message, chatId: String, text: String) {
-        bot.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
-        val markovPaths = MarkovFunctions.getAllPersonalMarkovPaths(chatId)
+    private fun doStatisticsCommand(message: Message, chatId: String) {
+        this.botInstace.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
+        val markovPaths = markovFunctions.getAllPersonalMarkovPaths(chatId)
 
         val userIdToWordCountsMap = markovPaths
             .mapNotNull { path ->
@@ -341,13 +362,13 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
 
         val universe = computeUniverse(userIdToWordCountsMap.values)
         val listText = userIdToWordCountsMap.mapNotNull { (userId, wordCounts) ->
-            val response = bot.getChatMember(ChatId.fromId(chatId.toLong()), userId.toLong())
+            val response = this.botInstace.getChatMember(ChatId.fromId(chatId.toLong()), userId.toLong())
             val chatMember = response.getOrNull()
 
             if (chatMember != null) {
                 val mostDistinguishingWords = scoreMostDistinguishingWords(wordCounts, universe).keys.take(5)
                 "${
-                    chatMember.user.displayName.takeIf { it.isNotBlank() }
+                    chatMember.user.displayName.takeIf { it.isNotBlank() } 
                         ?: chatMember.user.username?.takeIf { it.isNotBlank() }
                         ?: "User ID: $userId"
                 }\n" +
@@ -359,30 +380,31 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
 
         val replyText = if (listText.isBlank()) "<no data available>" else "Most distinguishing words:\n\n$listText"
 
-        reply(bot, message, replyText)
+        reply(message, replyText)
     }
 
-    private fun doDeleteMyDataCommand(bot: Bot, message: Message, chatId: String, senderId: String) {
+    private fun doDeleteMyDataCommand(message: Message, chatId: String, senderId: String) {
         val replyText: String
-        bot.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
+        this.botInstace.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
 
-        if (isCreator(bot, ChatId.fromId(chatId.toLong()), senderId.toLong())) {
+        if (isCreator(this.botInstace, ChatId.fromId(chatId.toLong()), senderId.toLong())) {
             wantToDeleteOwnData.getOrPut(chatId) { mutableSetOf() } += senderId
+
             replyText = "Are you sure you want to delete your Markov chain data in this group? " +
                     "Say \"yes\" to confirm, or anything else to cancel."
         }
         else
             replyText = "NO eres el JEFE, AMIC"
 
-        reply(bot, message, replyText)
+        reply(message, replyText)
     }
 
-    private fun doDeleteUserDataCommand(bot: Bot, message: Message, chatId: String, from: User, senderId: String,
+    private fun doDeleteUserDataCommand(message: Message, chatId: String, from: User, senderId: String,
                                         entities: List<MessageEntity>) {
-        bot.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
+        this.botInstace.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
         var parseMode: ParseMode? = null
 
-        val replyText = if (isCreator(bot, ChatId.fromId(message.chat.id), from.id)) {
+        val replyText = if (isCreator(this.botInstace, ChatId.fromId(message.chat.id), from.id)) {
             if (entities.size < 2)
                 null
             else {
@@ -412,17 +434,17 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
         else
             "NO eres el JEFE, AMIC"
 
-        reply(bot, message, replyText, parseMode)
+        reply(message, replyText, parseMode)
     }
 
-    private fun doDeleteMessageDataCommand(bot: Bot, message: Message, chatId: String, senderId: String) {
+    private fun doDeleteMessageDataCommand(message: Message, chatId: String, senderId: String) {
         val replyText: String
 
-        bot.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
-        if (isCreator(bot, ChatId.fromId(message.chat.id), senderId.toLong())) {
+        this.botInstace.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
+        if (isCreator(this.botInstace, ChatId.fromId(message.chat.id), senderId.toLong())) {
             replyText = message.replyToMessage?.let { replyToMessage ->
                 replyToMessage.from?.takeIf {
-                    it.id.toString() == senderId && isCreator(bot, ChatId.fromId(senderId.toLong()), message.from!!.id)
+                    it.id.toString() == senderId && isCreator(this.botInstace, ChatId.fromId(senderId.toLong()), message.from!!.id)
                 }?.let { _ ->
                     wantToDeleteMessageData.getOrPut(chatId) { mutableMapOf() }[senderId] = replyToMessage.text ?: ""
                     "Are you sure you want to delete that message from your Markov chain " +
@@ -433,59 +455,15 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
         else
             replyText = "NO eres el JEFE, AMIC"
 
-        reply(bot, message, replyText)
+        reply(message, replyText)
     }
 
-    private fun analyzeMessage(chatId: String, userId: String, text: String) {
-        val path = MarkovFunctions.getMarkovPath(chatId, userId)
-        val markovChain = tryOrNull(reportException = false) { MarkovChain.read(path) } ?: MarkovChain()
-        val totalMarkovChain = getOrCreateTotalMarkovChain(chatId)
-        val words = text.split(whitespaceRegex)
-
-        markovChain.add(words)
-        markovChain.write(path)
-        totalMarkovChain.add(words)
-        totalMarkovChain.write(MarkovFunctions.getTotalMarkovPath(chatId))
-    }
-
-    private fun getOrCreateTotalMarkovChain(chatId: String): MarkovChain {
-        val path = MarkovFunctions.getTotalMarkovPath(chatId)
-        var markovChain = tryOrNull(reportException = false) { MarkovChain.read(path) }
-
-        if (markovChain == null) {
-            markovChain = MarkovChain()
-
-            for (personalMarkovChain in MarkovFunctions.readAllPersonalMarkov(chatId))
-                markovChain.add(personalMarkovChain)
-
-            markovChain.write(path)
-        }
-
-        return markovChain
-    }
-
-    private fun generateMessage(chatId: String, userId: String): String? =
-        tryOrNull(reportException = false) { MarkovChain.read(MarkovFunctions.getMarkovPath(chatId, userId)) }?.generate()
-            ?.takeIf { it.isNotEmpty() }?.joinToString(" ")
-
-    private fun generateMessage(chatId: String, userId: String, seed: String): MarkovChain.GenerateWithSeedResult? =
-        tryOrNull(reportException = false) { MarkovChain.read(MarkovFunctions.getMarkovPath(chatId, userId)) }
-            ?.generateWithCaseInsensitiveSeed(seed)
-
-    private fun generateMessageTotal(chatId: String): String? =
-        tryOrNull(reportException = false) { getOrCreateTotalMarkovChain(chatId) }?.generate()
-            ?.takeIf { it.isNotEmpty() }?.joinToString(" ")
-
-    private fun generateMessageTotal(chatId: String, seed: String): MarkovChain.GenerateWithSeedResult? =
-        tryOrNull(reportException = false) { getOrCreateTotalMarkovChain(chatId) }
-            ?.generateWithCaseInsensitiveSeed(seed)
-
-    private fun reply(bot: Bot, message: Message, text: String, parseMode: ParseMode? = null) =
-        bot.sendMessage(ChatId.fromId(message.chat.id), text, replyToMessageId = message.messageId,
+    private fun reply(message: Message, text: String, parseMode: ParseMode? = null) =
+        this.botInstace.sendMessage(ChatId.fromId(message.chat.id), text, replyToMessageId = message.messageId,
             parseMode = parseMode)
 
-    private fun sendAndMention(bot: Bot, message: Message, text: String, entities: List<MessageEntity>) {
-        bot.sendChatAction(ChatId.fromId(message.chat.id), ChatAction.TYPING)
+    private fun sendAndMention(message: Message, text: String, entities: List<MessageEntity>) {
+        this.botInstace.sendChatAction(ChatId.fromId(message.chat.id), ChatAction.TYPING)
         var parseMode: ParseMode? = null
         var sendText = text
 
@@ -505,35 +483,29 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
                 if (mentionUserId == null)
                     sendText = "NO me has dado un usuario, AMIC"
                 else
-                    sendText += " $formattedUsername"
+                    sendText += formattedUsername
             }
         }
         else
             sendText = "NO me has dado un usuario, AMIC"
 
-        bot.sendMessage(ChatId.fromId(message.chat.id), sendText, parseMode = parseMode)
+        this.botInstace.sendMessage(ChatId.fromId(message.chat.id), sendText, parseMode = parseMode)
     }
 
-    private fun respond(bot: Bot, message: Message, chatId: String, from: User, ignoreRNG: Boolean = false) {
+    private fun respond(message: Message, chatId: String, from: User, ignoreRNG: Boolean = false) {
         if (myId != from.id) {
-            if (message.replyToMessage?.takeIf { it.from?.id == myId } != null) {
-                log("A lo mejor respondo")
-
+            if (message.replyToMessage?.takeIf { it.from?.id == myId } != null)
                 if (rand.nextInt(100) in 0..replyFrecuence || ignoreRNG)
-                    reply(bot, message, generateMessageTotal(chatId)!!)
-            }
-            else if (rand.nextInt(100) in 0..chatFrequence || ignoreRNG) {
-                log("Top amic")
+                    reply(message, markovFunctions.generateMessageTotal(chatId)!!)
 
-                reply(bot, message, generateMessageTotal(chatId)!!)
-            }
+            else if (rand.nextInt(100) in 0..chatFrequence || ignoreRNG)
+                reply(message, markovFunctions.generateMessageTotal(chatId)!!)
         }
     }
 
     private fun isBotMentioned(message: Message, entities: List<MessageEntity>): Boolean {
         var isMentioned = false
 
-        log("Anem a veure si me han mencionat")
         for (it in entities) {
             if (it.isMention()) {
                 val (mentionUserId, eText) = getMentionUserId(message, it)
@@ -544,13 +516,10 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
                     eText
 
                 if (formattedUsername == "@$myUsername") {
-                    log("Me han mencionat amic")
                     isMentioned = true
 
                     break
                 }
-
-                log("No, $formattedUsername yo soy @$myUsername")
             }
         }
 
@@ -561,7 +530,7 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
         val text = getMessageEntityText(message, entity)
 
         val id = when (entity.type) {
-            MessageEntity.Type.MENTION -> getUserIdForUsername(text.drop(1))
+            MessageEntity.Type.MENTION -> markovFunctions.getUserIdForUsername(text.drop(1))
             MessageEntity.Type.TEXT_MENTION -> entity.user?.id?.toString()
             else -> null
         }
@@ -569,56 +538,10 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
         return Pair(id, text)
     }
 
-    private fun getUserIdForUsername(username: String): String? =
-        tryOrNull(reportException = false) { readUsernames() }?.get(username.lowercase())
-
-    private fun storeUsername(username: String, userId: String) {
-        val usernames = tryOrNull(reportException = false) { readUsernames() } ?: mutableMapOf()
-        usernames[username.lowercase()] = userId
-
-        writeUsernames(usernames)
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun readUsernames(): MutableMap<String, String> = ObjectMapper().readValue(
-        File(MarkovFunctions.getUsernamesPath()), MutableMap::class.java) as MutableMap<String, String>
-
-    private fun writeUsernames(usernames: Map<String, String>) = ObjectMapper().writeValue(
-        File(MarkovFunctions.getUsernamesPath()), usernames)
-
-    private fun deleteChat(chatId: String): Boolean = File(MarkovFunctions.getChatPath(chatId))
-        .deleteRecursively()
-
-    private fun deleteMarkov(chatId: String, userId: String): Boolean {
-        // remove personal markov chain from total markov chain
-        val path = MarkovFunctions.getMarkovPath(chatId, userId)
-        val markovChain = tryOrNull(reportException = false) { MarkovChain.read(path) } ?: MarkovChain()
-        val totalMarkovChain = getOrCreateTotalMarkovChain(chatId)
-
-        totalMarkovChain.remove(markovChain)
-        totalMarkovChain.write(MarkovFunctions.getTotalMarkovPath(chatId))
-
-        // delete personal markov chain
-        return File(path).delete()
-    }
-
-    private fun deleteMessage(chatId: String, userId: String, text: String) {
-        val words = text.split(whitespaceRegex)
-
-        // remove from personal markov chain
-        val path = MarkovFunctions.getMarkovPath(chatId, userId)
-        val markovChain = tryOrNull(reportException = false) { MarkovChain.read(path) } ?: MarkovChain()
-
-        markovChain.remove(words)
-        markovChain.write(path)
-
-        // remove from total markov chain
-        val totalMarkovChain = getOrCreateTotalMarkovChain(chatId)
-
-        totalMarkovChain.remove(words)
-        totalMarkovChain.write(MarkovFunctions.getTotalMarkovPath(chatId))
-    }
-
     private fun matchesCommand(text: String, command: String): Boolean = text == "/$command" ||
             text == "/$command@$myUsername"
+
+    private fun notifyException(text: String) = this.botInstace.sendMessage(this.ownerChatId, "\u26A0\uFE0F $text")
+
+    private fun notifyStartup() = this.botInstace.sendMessage(this.ownerChatId, "Bot started")
 }

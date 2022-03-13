@@ -1,4 +1,4 @@
-package clockvapor.telegram.markov
+package oscarntnz.telegram.neovelasco
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.io.File
@@ -10,6 +10,7 @@ class Config {
     lateinit var databaseName: String
     var replyFrecuence by Delegates.notNull<Int>()
     var chatFrecuence by Delegates.notNull<Int>()
+    var ownerChatId by Delegates.notNull<Long>()
 
     companion object {
         fun read(path: String): Config = ObjectMapper().readValue(File(path), Config::class.java)

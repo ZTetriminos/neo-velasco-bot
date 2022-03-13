@@ -21,7 +21,7 @@
         <kmongo.version>4.5.0</kmongo.version>
         <heroku.version>3.0.3</heroku.version>
         <maven-assembly.version>3.3.0</maven-assembly.version>
-        <main.class>clockvapor.telegram.markov.MarkovTelegramBot</main.class>
+        <main.class>oscarntnz.telegram.neovelasco.MarkovTelegramBot</main.class>
     </properties>
 
     <repositories>
@@ -63,7 +63,6 @@
             <artifactId>kotlin-stdlib-common</artifactId>
             <version>${kotlin.version}</version>
         </dependency>
-
         <dependency>
             <groupId>org.jetbrains.kotlin</groupId>
             <artifactId>kotlin-reflect</artifactId>
