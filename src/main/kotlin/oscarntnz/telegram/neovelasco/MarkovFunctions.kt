@@ -3,15 +3,16 @@ package oscarntnz.telegram.neovelasco
 import clockvapor.markov.MarkovChain
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.mongodb.client.MongoDatabase
+import org.bson.conversions.Bson
+import org.litote.kmongo.eq
+import org.litote.kmongo.getCollection
+import oscarntnz.telegram.neovelasco.database.Chain
+import oscarntnz.telegram.neovelasco.database.User
 import java.io.File
 import java.nio.file.Paths
 
 class MarkovFunctions(private val database: MongoDatabase) {
-    companion object {
-        private const val DATA_PATH = "data"
-    }
-
-    private fun getMarkovPath(chatId: String, userId: String): String = Paths.get(
+    /*private fun getMarkovPath(chatId: String, userId: String): String = Paths.get(
         getChatPath(chatId), "$userId.json").toString()
 
     private fun getTotalMarkovPath(chatId: String): String =
@@ -24,14 +25,20 @@ class MarkovFunctions(private val database: MongoDatabase) {
         File(DATA_PATH).mkdirs()
 
         return Paths.get(DATA_PATH, "usernames.json").toString()
+    }*/
+
+    private fun readAllPersonalMarkov(chatId: String): List<MarkovChain> {
+        val chains = database.getCollection<Chain>("chains")
+
+        return chains.find(Chain::chatId eq chatId).toList().map(Chain::toMarkovChain)
     }
 
-    private fun readAllPersonalMarkov(chatId: String): List<MarkovChain> =
-        getAllPersonalMarkovPaths(chatId).map{ MarkovChain.read(it) }
+    private fun readUsernames(): MutableMap<String, String> {
+        val users = database.getCollection<User>("usernames")
 
-    private fun readUsernames(): MutableMap<String, String> = ObjectMapper().readValue(
-        File(getUsernamesPath()), MutableMap::class.java) as MutableMap<String, String>
-
+        return users.find().associate { it.username to it.userId }.toMutableMap()
+    }
+/*
     private fun writeUsernames(usernames: Map<String, String>) = ObjectMapper().writeValue(
         File(getUsernamesPath()), usernames)
 
@@ -123,5 +130,5 @@ class MarkovFunctions(private val database: MongoDatabase) {
 
         totalMarkovChain.remove(words)
         totalMarkovChain.write(getTotalMarkovPath(chatId))
-    }
+    }*/
 }
