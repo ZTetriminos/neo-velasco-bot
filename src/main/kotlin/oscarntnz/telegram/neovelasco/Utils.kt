@@ -17,7 +17,7 @@ val MarkovChain.wordCounts: Map<String, Int> get() {
         for ((word, count) in dataMap) {
             val sanitized = word.sanitize()
 
-            if (sanitized.isNotBlank())
+            if (!word.isGif() && sanitized.isNotBlank())
                 map.compute(sanitized.lowercase()) { _, n -> n?.plus(count) ?: count }
         }
 
@@ -138,3 +138,9 @@ fun isCreator(bot: Bot, chatId: ChatId, userId: Long): Boolean =
 
 fun matchesCommand(text: String, command: String, botUsername: String): Boolean =
     text == "/$command" || text == "/$command@$botUsername"
+
+fun String.gifIdToMarkovString(): String = "[GIF]$this[/GIF]"
+
+fun String.isGif(): Boolean = this.contains(Regex("^\\[GIF](.*)\\[/GIF]\$"))
+
+fun String.removeGifPrefixSufix(): String = this.replace(Regex("^\\[GIF]|\\[/GIF]\$"), "")

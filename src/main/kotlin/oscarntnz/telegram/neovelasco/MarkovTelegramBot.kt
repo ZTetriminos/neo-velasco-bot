@@ -99,26 +99,24 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
             }
         }
 
+        markovFunctions.storeUsername(myUsername, myId.toString())
         this.notifyStartup()
         server.start(wait = true)
     }
 
     private fun handleUpdate(update: Update) {
+        log(update.toString())
         if(update.message != null) {
             val chatId = ChatId.fromId(update.message!!.chat.id)
 
             if(!isOwnerOnTheGroup(chatId) || !canSendMessages(chatId)) {
-                log("I'm leaving")
                 this.botInstace.leaveChat(chatId)
                 markovFunctions.deleteChat(chatId.id.toString())
 
                 return
             }
-            log("I'm not leaving")
 
             tryOrLog { handleMessage(update.message!!) }
-
-            log(update.toString())
         }
     }
 
@@ -147,7 +145,9 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
             handleMessage(message, chatId, from, senderId, text)
         else if (caption != null)
             handleMessage(message, chatId, from, senderId, caption)
-        else if (message.animation != null || message.audio != null || message.photo != null || message.sticker != null)
+        else if(message.animation != null)
+            handleGif(message)
+        else if (message.audio != null || message.photo != null || message.sticker != null)
             respond(message, chatId, from)
     }
 
@@ -166,6 +166,13 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
         if (shouldAnalyzeMessage)
             markovFunctions.analyzeMessage(chatId, senderId, text)
     }
+
+    private fun handleGif(message: Message) {
+        val markovGif = message.animation!!.fileId.gifIdToMarkovString()
+
+        markovFunctions.analyzeMessage(message.chat.id.toString(), message.from!!.id.toString(), markovGif)
+    }
+
 
     @Suppress("SameParameterValue")
     private fun handleMessage(message: Message, chatId: String, from: User, senderId: String, text: String,
@@ -466,10 +473,14 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
 
     private fun reply(message: Message, text: String, parseMode: ParseMode? = null) {
         log("Respondind with $text")
-        this.botInstace.sendMessage(
-            ChatId.fromId(message.chat.id), text, replyToMessageId = message.messageId,
-            parseMode = parseMode
-        )
+        if(!text.isGif())
+            this.botInstace.sendMessage(
+                ChatId.fromId(message.chat.id), text, replyToMessageId = message.messageId,
+                parseMode = parseMode
+            )
+        else {
+            this.sendGif(ChatId.fromId(message.chat.id), text.removeGifPrefixSufix(), message.messageId)
+        }
     }
 
     private fun sendAndMention(message: Message, text: String) {
@@ -517,11 +528,9 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
         var isMentioned = false
 
         for (it in entities) {
-            log(it.toString())
             if (it.isMention()) {
                 log("Hay una mencion en $it")
                 val mentionUserId = getMentionUserId(message, it).first
-                if (mentionUserId != null)  { log("MY USERID $myId MENTION ID $mentionUserId") }
 
                 if (mentionUserId?.toLong() == myId) {
                     log("I'm being mentioned")
@@ -532,7 +541,7 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
             }
         }
 
-        return true//isMentioned
+        return isMentioned
     }
 
     private fun getMentionUserId(message: Message, entity: MessageEntity): Pair<String?, String> {
@@ -554,10 +563,14 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
 
     private fun notifyStartup() = this.botInstace.sendMessage(this.ownerChatId, "Bot started")
 
-    private fun isOwnerOnTheGroup(chatId: ChatId): Boolean = this.botInstace.getChatMember(chatId, ownerId).isSuccess
+    private fun isOwnerOnTheGroup(chatId: ChatId): Boolean =
+        this.botInstace.getChatMember(chatId, ownerId).takeIf { it.isSuccess }?.get()?.user?.id == this.ownerId
 
     private fun canSendMessages(chatId: ChatId): Boolean  =
         this.botInstace.getChatMember(chatId, myId!!).takeIf { it.isSuccess }?.get()?.canSendMessages?: true &&
                 this.botInstace.getChat(chatId).takeIf { it.isSuccess }?.get()?.permissions?.canSendMessages?: true
 
+    private fun sendGif(chatId: ChatId, fileId: String, inReplyTo: Long) {
+        this.botInstace.sendAnimation(chatId, TelegramFile.ByFileId(fileId), replyToMessageId = inReplyTo)
+    }
 }
