@@ -13,6 +13,8 @@ class Config {
     var replyFrecuence by Delegates.notNull<Int>()
     var chatFrecuence by Delegates.notNull<Int>()
     var ownerChatId by Delegates.notNull<Long>()
+    var ownerId by Delegates.notNull<Long>()
+    lateinit var insults: Array<String>
 
     companion object {
         fun read(path: String): Config = ObjectMapper(JsonFactory()).readValue(File(path), Config::class.java)

@@ -2,7 +2,10 @@ package oscarntnz.telegram.neovelasco
 
 import clockvapor.markov.MarkovChain
 import com.github.kotlintelegrambot.Bot
-import com.github.kotlintelegrambot.entities.*
+import com.github.kotlintelegrambot.entities.ChatId
+import com.github.kotlintelegrambot.entities.Message
+import com.github.kotlintelegrambot.entities.MessageEntity
+import com.github.kotlintelegrambot.entities.User
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlin.math.pow
@@ -24,6 +27,12 @@ val MarkovChain.wordCounts: Map<String, Int> get() {
 val User.displayName: String get() = lastName?.takeIf { it.isNotBlank() }?.let { "$firstName $it" } ?: firstName
 
 val whitespaceRegex = Regex("\\s+")
+
+const val ANSI_RESET = "\u001B[0m"
+const val ANSI_BLACK = "\u001B[30m"
+const val ANSI_RED = "\u001B[31m"
+const val ANSI_GREEN = "\u001B[32m"
+const val ANSI_YELLOW = "\u001B[33m"
 
 private const val punctuation = "[`~!@#$%^&*()\\-_=+\\[\\],<.>/?\\\\|;:\"]+"
 
@@ -62,7 +71,7 @@ private fun String.sanitize(): String =
 fun log(s: String) {
     val timestamp = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
 
-    println("$timestamp: $s")
+    println("${ANSI_YELLOW}$timestamp: ${s}$ANSI_RESET")
 }
 
 fun log(t: Throwable) {

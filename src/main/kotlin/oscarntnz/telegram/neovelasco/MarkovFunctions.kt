@@ -1,134 +1,112 @@
 package oscarntnz.telegram.neovelasco
 
 import clockvapor.markov.MarkovChain
-import com.fasterxml.jackson.databind.ObjectMapper
+import com.mongodb.client.MongoCollection
 import com.mongodb.client.MongoDatabase
-import org.bson.conversions.Bson
-import org.litote.kmongo.eq
-import org.litote.kmongo.getCollection
+import org.litote.kmongo.*
 import oscarntnz.telegram.neovelasco.database.Chain
 import oscarntnz.telegram.neovelasco.database.User
-import java.io.File
-import java.nio.file.Paths
 
-class MarkovFunctions(private val database: MongoDatabase) {
-    /*private fun getMarkovPath(chatId: String, userId: String): String = Paths.get(
-        getChatPath(chatId), "$userId.json").toString()
+class MarkovFunctions(database: MongoDatabase) {
+    private var chainsCollection: MongoCollection<Chain> = database.getCollection<Chain>("chains")
+    private var usersCollection: MongoCollection<User> = database.getCollection<User>("usernames")
 
-    private fun getTotalMarkovPath(chatId: String): String =
-        Paths.get(getChatPath(chatId), "total.json").toString()
+    private fun readAllPersonalMarkov(chatId: String): List<MarkovChain> =
+        chainsCollection.find(Chain::chatId eq chatId).toList().map(Chain::toMarkovChain)
 
-    private fun getChatPath(chatId: String): String = Paths.get(DATA_PATH, chatId).toString()
-        .also { File(it).mkdirs() }
+    private fun readUsername(username: String? = null): MutableMap<String, String> =
+        if(username == null) usersCollection.find().associate { it.username to it.userId }.toMutableMap()
+        else usersCollection.find(User::username eq username).associate { it.username to it.userId }.toMutableMap()
 
-    private fun getUsernamesPath(): String {
-        File(DATA_PATH).mkdirs()
+    private fun checkUser(username: String, userId: String): Boolean =
+        usersCollection.findOne(User::username eq username, User::userId eq userId) != null
 
-        return Paths.get(DATA_PATH, "usernames.json").toString()
-    }*/
+    private fun writeUsernames(usernames: Map<String, String>) {
+        val userList: Array<User> = usernames.map { User(username = it.key, userId = it.value) }.toTypedArray()
 
-    private fun readAllPersonalMarkov(chatId: String): List<MarkovChain> {
-        val chains = database.getCollection<Chain>("chains")
-
-        return chains.find(Chain::chatId eq chatId).toList().map(Chain::toMarkovChain)
-    }
-
-    private fun readUsernames(): MutableMap<String, String> {
-        val users = database.getCollection<User>("usernames")
-
-        return users.find().associate { it.username to it.userId }.toMutableMap()
-    }
-/*
-    private fun writeUsernames(usernames: Map<String, String>) = ObjectMapper().writeValue(
-        File(getUsernamesPath()), usernames)
-
-    private fun getOrCreateTotalMarkovChain(chatId: String): MarkovChain {
-        val path = getTotalMarkovPath(chatId)
-        var markovChain = tryOrNull(reportException = false) { MarkovChain.read(path) }
-
-        if (markovChain == null) {
-            markovChain = MarkovChain()
-
-            for (personalMarkovChain in readAllPersonalMarkov(chatId))
-                markovChain.add(personalMarkovChain)
-
-            markovChain.write(path)
+        userList.forEach {
+            if(checkUser(it.username, it.userId))
+                usersCollection.updateOne(and(User::username eq it.username, User::userId eq it.userId),
+                set(User::username setTo it.username, User::userId setTo it.userId))
+            else
+                usersCollection.insertOne(it)
         }
-
-        return markovChain
     }
 
-    fun getAllPersonalMarkovPaths(chatId: String): List<String> =
-        File(getChatPath(chatId)).listFiles()!!.filter { !it.name.endsWith("total.json") }.map{ it.path }
+    private fun getTotalMarkovChain(chatId: String): MarkovChain? =
+        Chain.listToMarkovChain(chainsCollection.find(Chain::chatId eq chatId).toList())
+
+    private fun getMarkovChain(chatId: String, userId: String): MarkovChain? =
+        chainsCollection.findOne(Chain::chatId eq chatId, Chain::userId eq userId)?.toMarkovChain()
+
+    fun getAllPersonalMarkovChains(chatId: String): MutableMap<String, MarkovChain> =
+        chainsCollection.find(Chain::chatId eq chatId, Chain::userId ne null)
+            .associate { it.userId!! to it.toMarkovChain() }.toMutableMap()
+
+    private fun getOrCreateMarkovChain(chatId: String, userId: String): MarkovChain {
+        var chain = getMarkovChain(chatId, userId)
+
+        if(chain == null)   chain = MarkovChain()
+
+        return chain
+    }
 
     fun analyzeMessage(chatId: String, userId: String, text: String) {
-        val path = getMarkovPath(chatId, userId)
-        val markovChain = tryOrNull(reportException = false) { MarkovChain.read(path) } ?: MarkovChain()
-        val totalMarkovChain = getOrCreateTotalMarkovChain(chatId)
+        val markovChain = getOrCreateMarkovChain(chatId, userId)
         val words = text.split(whitespaceRegex)
 
         markovChain.add(words)
-        markovChain.write(path)
-        totalMarkovChain.add(words)
-        totalMarkovChain.write(getTotalMarkovPath(chatId))
+        insertOrUpdateChain(chatId, userId, markovChain)
+    }
+
+    private fun insertOrUpdateChain(chatId: String, userId: String, chain: MarkovChain) {
+        val exists = chainsCollection.findOne(Chain::chatId eq chatId, Chain::userId eq userId) != null
+
+        if(!exists)
+            chainsCollection.insertOne(Chain.fromMarkovChain(chatId, userId, chain))
+        else
+            chainsCollection.updateOne(and(Chain::chatId eq chatId, Chain::userId eq userId), setValue(Chain::data, chain.data))
     }
 
     fun generateMessage(chatId: String, userId: String): String? =
-        tryOrNull(reportException = false) { MarkovChain.read(getMarkovPath(chatId, userId)) }?.generate()
+        tryOrNull(reportException = false) { getMarkovChain(chatId, userId) }?.generate()
             ?.takeIf { it.isNotEmpty() }?.joinToString(" ")
 
     fun generateMessage(chatId: String, userId: String, seed: String): MarkovChain.GenerateWithSeedResult? =
-        tryOrNull(reportException = false) { MarkovChain.read(getMarkovPath(chatId, userId)) }
+        tryOrNull(reportException = false) { getMarkovChain(chatId, userId) }
             ?.generateWithCaseInsensitiveSeed(seed)
 
     fun generateMessageTotal(chatId: String): String? =
-        tryOrNull(reportException = false) { getOrCreateTotalMarkovChain(chatId) }?.generate()
+        tryOrNull(reportException = false) { getTotalMarkovChain(chatId) }?.generate()
             ?.takeIf { it.isNotEmpty() }?.joinToString(" ")
 
     fun generateMessageTotal(chatId: String, seed: String): MarkovChain.GenerateWithSeedResult? =
-        tryOrNull(reportException = false) { getOrCreateTotalMarkovChain(chatId) }
+        tryOrNull(reportException = false) { getTotalMarkovChain(chatId) }
             ?.generateWithCaseInsensitiveSeed(seed)
 
     fun getUserIdForUsername(username: String): String? =
-        tryOrNull(reportException = false) { readUsernames() }?.get(username.lowercase())
+        tryOrNull(reportException = false) { readUsername(username.lowercase()) }?.get(username.lowercase())
 
     fun storeUsername(username: String, userId: String) {
-        val usernames = tryOrNull(reportException = false) { readUsernames() } ?: mutableMapOf()
+        val usernames = tryOrNull(reportException = false) { readUsername() } ?: mutableMapOf()
         usernames[username.lowercase()] = userId
 
         writeUsernames(usernames)
     }
 
-    fun deleteChat(chatId: String): Boolean = File(getChatPath(chatId))
-        .deleteRecursively()
+    fun deleteChat(chatId: String): Boolean =
+        chainsCollection.deleteMany(Chain::chatId eq chatId).deletedCount > 0
 
-    fun deleteMarkov(chatId: String, userId: String): Boolean {
-        // remove personal markov chain from total markov chain
-        val path = getMarkovPath(chatId, userId)
-        val markovChain = tryOrNull(reportException = false) { MarkovChain.read(path) } ?: MarkovChain()
-        val totalMarkovChain = getOrCreateTotalMarkovChain(chatId)
-
-        totalMarkovChain.remove(markovChain)
-        totalMarkovChain.write(getTotalMarkovPath(chatId))
-
-        // delete personal markov chain
-        return File(path).delete()
-    }
+    fun deleteMarkov(chatId: String, userId: String): Boolean =
+        chainsCollection.deleteOne(Chain::chatId eq chatId, Chain::userId eq userId).deletedCount > 0
 
     fun deleteMessage(chatId: String, userId: String, text: String) {
         val words = text.split(whitespaceRegex)
 
         // remove from personal markov chain
-        val path = getMarkovPath(chatId, userId)
-        val markovChain = tryOrNull(reportException = false) { MarkovChain.read(path) } ?: MarkovChain()
+        val markovChain = getMarkovChain(chatId, userId)
 
-        markovChain.remove(words)
-        markovChain.write(path)
-
-        // remove from total markov chain
-        val totalMarkovChain = getOrCreateTotalMarkovChain(chatId)
-
-        totalMarkovChain.remove(words)
-        totalMarkovChain.write(getTotalMarkovPath(chatId))
-    }*/
+        markovChain?.remove(words)
+        markovChain?.let { insertOrUpdateChain(chatId, userId, it) }
+    }
 }

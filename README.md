@@ -7,13 +7,19 @@ Added support for Heroku deployment. For the bot configuration you must make a `
   "webhookURL": "WEBHOOK_URL",
   "databaseName": "DATABASE_NAME",
   "replyFrecuence": 90,
-  "chatFrecuence": 10
+  "chatFrecuence": 10,
+  "ownerChatId": 123456789,
+  "ownerId": 123456789,
+  "insults": []
 }
 ```
 Where `telegramBotToken` is the bot token, `webhookURL` is the URL to your Heroku app (`https://app-name.herokuapp.com`), 
 `databaseName` mongoDB database name (currently not in use), `replyFrequence` is a 0 to 100 value which represents the probability
 of the bot to reply to a message in which the bot was quoted, `chatFrequence` which is the same as the last value, but when the bot
-isn't quoted. When the bot is mentioned via `@` it always replies.
+isn't quoted. When the bot is mentioned via `@` it always replies. `ownerChatId` is the id of your chat with the bot, so it can
+send you messages when the bot starts or when an exception occurs, `ownerId` is your UserId in Telegram, you can get those two
+with bots like [Get my ID Bot](https://t.me/getmyid_bot?start=botostore). `insults` is an array of strings which whose entries
+will be chosen randomly and sent to the chat when using te `/insult` command.
 
 # markov-telegram-bot
 
@@ -60,6 +66,10 @@ opens.
 ### /stats
 The `/stats` command shows a list of each user's top five most distinguishing words - words they use the most, compared
 to everyone else in the group.
+
+### /insult
+The `/stats` command choses a random insult in the insult array and mentions the user appended to the message. It will require
+a user mention.
 
 ## Running the Bot
 

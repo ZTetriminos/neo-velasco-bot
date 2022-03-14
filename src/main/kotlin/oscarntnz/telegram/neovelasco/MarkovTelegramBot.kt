@@ -17,14 +17,14 @@ import io.ktor.routing.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import org.litote.kmongo.KMongo
-import java.io.File
 import java.util.Date
 import kotlin.random.Random
 
 class MarkovTelegramBot(private val token: String, private val botPort: Int,
                         private val webhookURL: String, private val databaseURL: String,
                         private val databaseName: String, private val replyFrecuence: Int,
-                        private val chatFrequence: Int, private val ownerChatId: ChatId) {
+                        private val chatFrequence: Int, private val ownerChatId: ChatId,
+                        private val ownerId: Long, private val insults: Array<String>) {
     private var myId: Long? = null
     private lateinit var myUsername: String
     private val wantToDeleteOwnData = mutableMapOf<String, MutableSet<String>>()
@@ -46,7 +46,7 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
 
             val bot = MarkovTelegramBot(config.telegramBotToken,  System.getenv("PORT").toInt(), config.webhookURL,
             System.getenv("MONGODB_URI"), config.databaseName, config.replyFrecuence, config.chatFrecuence,
-            ChatId.fromId(config.ownerChatId))
+            ChatId.fromId(config.ownerChatId), config.ownerId, config.insults)
 
             try {
                 bot.run()
@@ -105,6 +105,17 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
 
     private fun handleUpdate(update: Update) {
         if(update.message != null) {
+            val chatId = ChatId.fromId(update.message!!.chat.id)
+
+            if(!isOwnerOnTheGroup(chatId) || !canSendMessages(chatId)) {
+                log("I'm leaving")
+                this.botInstace.leaveChat(chatId)
+                markovFunctions.deleteChat(chatId.id.toString())
+
+                return
+            }
+            log("I'm not leaving")
+
             tryOrLog { handleMessage(update.message!!) }
 
             log(update.toString())
@@ -187,7 +198,7 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
                     doDeleteMessageDataCommand(message, chatId, senderId)
 
                 matchesCommand(command, "insult") ->
-                    sendAndMention(message, "TU PUTA MADRE, AMIC", entities)
+                    sendAndMention(message, insults.random())
             }
         }
         else if (isBotMentioned(message, entities))
@@ -351,14 +362,9 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
 
     private fun doStatisticsCommand(message: Message, chatId: String) {
         this.botInstace.sendChatAction(ChatId.fromId(chatId.toLong()), ChatAction.TYPING)
-        val markovPaths = markovFunctions.getAllPersonalMarkovPaths(chatId)
+        val markovChains = markovFunctions.getAllPersonalMarkovChains(chatId)
 
-        val userIdToWordCountsMap = markovPaths
-            .mapNotNull { path ->
-                tryOrNull { MarkovChain.read(path) }
-                    ?.let { Pair(File(path).nameWithoutExtension, it.wordCounts) }
-            }
-            .toMap()
+        val userIdToWordCountsMap = markovChains.entries.associate { it.key to it.value.wordCounts }
 
         val universe = computeUniverse(userIdToWordCountsMap.values)
         val listText = userIdToWordCountsMap.mapNotNull { (userId, wordCounts) ->
@@ -458,17 +464,21 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
         reply(message, replyText)
     }
 
-    private fun reply(message: Message, text: String, parseMode: ParseMode? = null) =
-        this.botInstace.sendMessage(ChatId.fromId(message.chat.id), text, replyToMessageId = message.messageId,
-            parseMode = parseMode)
+    private fun reply(message: Message, text: String, parseMode: ParseMode? = null) {
+        log("Respondind with $text")
+        this.botInstace.sendMessage(
+            ChatId.fromId(message.chat.id), text, replyToMessageId = message.messageId,
+            parseMode = parseMode
+        )
+    }
 
-    private fun sendAndMention(message: Message, text: String, entities: List<MessageEntity>) {
+    private fun sendAndMention(message: Message, text: String) {
         this.botInstace.sendChatAction(ChatId.fromId(message.chat.id), ChatAction.TYPING)
         var parseMode: ParseMode? = null
         var sendText = text
 
-        if (entities.size > 1) {
-            val mention = entities[1]
+        if (message.entities != null && message.entities!!.size > 1) {
+            val mention = message.entities!![1]
 
             if (mention.isMention()) {
                 val (mentionUserId, e1Text) = getMentionUserId(message, mention)
@@ -483,7 +493,7 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
                 if (mentionUserId == null)
                     sendText = "NO me has dado un usuario, AMIC"
                 else
-                    sendText += formattedUsername
+                    sendText += " $formattedUsername"
             }
         }
         else
@@ -493,29 +503,28 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
     }
 
     private fun respond(message: Message, chatId: String, from: User, ignoreRNG: Boolean = false) {
-        if (myId != from.id) {
-            if (message.replyToMessage?.takeIf { it.from?.id == myId } != null)
+        if (myId != from.id)
+            if (message.replyToMessage?.takeIf { it.from?.id == myId } != null) {
                 if (rand.nextInt(100) in 0..replyFrecuence || ignoreRNG)
                     reply(message, markovFunctions.generateMessageTotal(chatId)!!)
-
+            }
             else if (rand.nextInt(100) in 0..chatFrequence || ignoreRNG)
                 reply(message, markovFunctions.generateMessageTotal(chatId)!!)
-        }
     }
 
     private fun isBotMentioned(message: Message, entities: List<MessageEntity>): Boolean {
+        log("Vamos a ver si me mencionan")
         var isMentioned = false
 
         for (it in entities) {
+            log(it.toString())
             if (it.isMention()) {
-                val (mentionUserId, eText) = getMentionUserId(message, it)
+                log("Hay una mencion en $it")
+                val mentionUserId = getMentionUserId(message, it).first
+                if (mentionUserId != null)  { log("MY USERID $myId MENTION ID $mentionUserId") }
 
-                val formattedUsername = if (mentionUserId != null && it.type == MessageEntity.Type.TEXT_MENTION)
-                    createInlineMention(eText, mentionUserId)
-                else
-                    eText
-
-                if (formattedUsername == "@$myUsername") {
+                if (mentionUserId?.toLong() == myId) {
+                    log("I'm being mentioned")
                     isMentioned = true
 
                     break
@@ -523,7 +532,7 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
             }
         }
 
-        return isMentioned
+        return true//isMentioned
     }
 
     private fun getMentionUserId(message: Message, entity: MessageEntity): Pair<String?, String> {
@@ -544,4 +553,11 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
     private fun notifyException(text: String) = this.botInstace.sendMessage(this.ownerChatId, "\u26A0\uFE0F $text")
 
     private fun notifyStartup() = this.botInstace.sendMessage(this.ownerChatId, "Bot started")
+
+    private fun isOwnerOnTheGroup(chatId: ChatId): Boolean = this.botInstace.getChatMember(chatId, ownerId).isSuccess
+
+    private fun canSendMessages(chatId: ChatId): Boolean  =
+        this.botInstace.getChatMember(chatId, myId!!).takeIf { it.isSuccess }?.get()?.canSendMessages?: true &&
+                this.botInstace.getChat(chatId).takeIf { it.isSuccess }?.get()?.permissions?.canSendMessages?: true
+
 }
