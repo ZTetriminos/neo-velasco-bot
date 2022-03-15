@@ -11,9 +11,6 @@ class MarkovFunctions(database: MongoDatabase) {
     private var chainsCollection: MongoCollection<Chain> = database.getCollection<Chain>("chains")
     private var usersCollection: MongoCollection<User> = database.getCollection<User>("usernames")
 
-    private fun readAllPersonalMarkov(chatId: String): List<MarkovChain> =
-        chainsCollection.find(Chain::chatId eq chatId).toList().map(Chain::toMarkovChain)
-
     private fun readUsername(username: String? = null): MutableMap<String, String> =
         if(username == null) usersCollection.find().associate { it.username to it.userId }.toMutableMap()
         else usersCollection.find(User::username eq username).associate { it.username to it.userId }.toMutableMap()

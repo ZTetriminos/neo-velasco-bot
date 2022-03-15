@@ -110,6 +110,7 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
             val chatId = ChatId.fromId(update.message!!.chat.id)
 
             if(!isOwnerOnTheGroup(chatId) || !canSendMessages(chatId)) {
+                this.botInstace.sendMessage(chatId, "No")
                 this.botInstace.leaveChat(chatId)
                 markovFunctions.deleteChat(chatId.id.toString())
 
@@ -138,17 +139,22 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
 
         from.username?.let { tryOrLog { markovFunctions.storeUsername(it, senderId) } }
 
-        val text = message.text
-        val caption = message.caption
-
-        if (text != null)
-            handleMessage(message, chatId, from, senderId, text)
-        else if (caption != null)
-            handleMessage(message, chatId, from, senderId, caption)
+        if (message.text != null)
+            handleMessage(message, chatId, from, senderId, message.text!!)
         else if(message.animation != null)
-            handleGif(message)
-        else if (message.audio != null || message.photo != null || message.sticker != null)
-            respond(message, chatId, from)
+            handleMedia(message, MessageType.GIF)
+        else if (message.audio != null)
+            handleMedia(message, MessageType.AUDIO)
+        else if (message.photo != null)
+            handleMedia(message, MessageType.PHOTO)
+        else if (message.sticker != null)
+            handleMedia(message, MessageType.STICKER)
+        else if (message.voice != null)
+            handleMedia(message, MessageType.VOICE)
+        else if (message.video != null)
+            handleMedia(message, MessageType.VIDEO)
+        else if (message.videoNote != null)
+            handleMedia(message, MessageType.VIDEO_NOTE)
     }
 
     private fun handleMessage(message: Message, chatId: String, from: User, senderId: String, text: String) {
@@ -163,18 +169,29 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
                 respond(message, chatId, from)
         }
 
-        if (shouldAnalyzeMessage)
-            markovFunctions.analyzeMessage(chatId, senderId, text)
+        if (shouldAnalyzeMessage) markovFunctions.analyzeMessage(chatId, senderId, text)
     }
 
-    private fun handleGif(message: Message) {
-        val markovGif = message.animation!!.fileId.gifIdToMarkovString()
+    private fun handleMedia(message: Message, type: MessageType) {
+        log("Handling $message witch is $type")
 
-        markovFunctions.analyzeMessage(message.chat.id.toString(), message.from!!.id.toString(), markovGif)
+        val markovMedia = when (type) {
+            MessageType.GIF -> message.animation!!.fileId.toMarkovString(MessageType.GIF)
+            MessageType.AUDIO -> message.audio!!.fileId.toMarkovString(MessageType.AUDIO)
+            MessageType.VOICE -> message.voice!!.fileId.toMarkovString(MessageType.VOICE)
+            MessageType.STICKER -> message.sticker!!.fileId.toMarkovString(MessageType.STICKER)
+            MessageType.VIDEO -> message.video!!.fileId.toMarkovString(MessageType.VIDEO)
+            MessageType.VIDEO_NOTE -> message.videoNote!!.fileId.toMarkovString(MessageType.VIDEO_NOTE)
+            MessageType.PHOTO -> message.photo!![0].fileId.toMarkovString(MessageType.PHOTO)
+        }
+
+        log("Sanitized value $markovMedia")
+
+        message.from?.let { markovFunctions.analyzeMessage(message.chat.id.toString(), it.id.toString(), markovMedia) }
+        message.from?.let { respond(message, message.chat.id.toString(), it) }
     }
 
 
-    @Suppress("SameParameterValue")
     private fun handleMessage(message: Message, chatId: String, from: User, senderId: String, text: String,
                               entities: List<MessageEntity>): Boolean {
         var shouldAnalyzeMessage = true
@@ -472,14 +489,50 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
     }
 
     private fun reply(message: Message, text: String, parseMode: ParseMode? = null) {
-        log("Respondind with $text")
-        if(!text.isGif())
-            this.botInstace.sendMessage(
-                ChatId.fromId(message.chat.id), text, replyToMessageId = message.messageId,
-                parseMode = parseMode
-            )
+        log("Replied with $text")
+        if(!text.isMedia())
+            this.botInstace.sendMessage(ChatId.fromId(message.chat.id), text, replyToMessageId = message.messageId,
+                parseMode = parseMode)
         else {
-            this.sendGif(ChatId.fromId(message.chat.id), text.removeGifPrefixSufix(), message.messageId)
+            log("That is media: ${text.getMediaType()} with id ${text.removeBrackets(MessageType.STICKER)}")
+            when (text.getMediaType()) {
+                MessageType.GIF ->
+                    this.sendGif(ChatId.fromId(message.chat.id),
+                        text.removeBrackets(MessageType.GIF),
+                        message.messageId)
+
+                MessageType.AUDIO ->
+                    this.sendAudio(ChatId.fromId(message.chat.id),
+                        text.removeBrackets(MessageType.AUDIO),
+                        message.messageId)
+
+                MessageType.VOICE ->
+                    this.sendVoice(ChatId.fromId(message.chat.id),
+                        text.removeBrackets(MessageType.VOICE),
+                        message.messageId)
+
+                MessageType.STICKER ->
+                    this.sendSticker(ChatId.fromId(message.chat.id),
+                        text.removeBrackets(MessageType.STICKER),
+                        message.messageId)
+
+                MessageType.VIDEO ->
+                    this.sendVideo(ChatId.fromId(message.chat.id),
+                        text.removeBrackets(MessageType.VIDEO),
+                        message.messageId)
+
+                MessageType.VIDEO_NOTE ->
+                    this.sendVideoNote(ChatId.fromId(message.chat.id),
+                        text.removeBrackets(MessageType.VIDEO_NOTE),
+                        message.messageId)
+
+                MessageType.PHOTO ->
+                    this.sendPhoto(ChatId.fromId(message.chat.id),
+                        text.removeBrackets(MessageType.PHOTO),
+                        message.messageId)
+
+                else -> Unit
+            }
         }
     }
 
@@ -563,14 +616,36 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
 
     private fun notifyStartup() = this.botInstace.sendMessage(this.ownerChatId, "Bot started")
 
-    private fun isOwnerOnTheGroup(chatId: ChatId): Boolean =
-        this.botInstace.getChatMember(chatId, ownerId).takeIf { it.isSuccess }?.get()?.user?.id == this.ownerId
+    private fun isOwnerOnTheGroup(chatId: ChatId): Boolean {
+        log(this.botInstace.getChatMember(chatId, ownerId).get().toString())
+
+        val status = this.botInstace.getChatMember(chatId, ownerId).get().status
+
+        return status != "kicked" && status != "left"
+    }
 
     private fun canSendMessages(chatId: ChatId): Boolean  =
-        this.botInstace.getChatMember(chatId, myId!!).takeIf { it.isSuccess }?.get()?.canSendMessages?: true &&
-                this.botInstace.getChat(chatId).takeIf { it.isSuccess }?.get()?.permissions?.canSendMessages?: true
+        this.botInstace.getChatMember(chatId, myId!!).get().canSendMessages?: true &&
+                this.botInstace.getChat(chatId).get().permissions?.canSendMessages?: true
 
-    private fun sendGif(chatId: ChatId, fileId: String, inReplyTo: Long) {
+    private fun sendGif(chatId: ChatId, fileId: String, inReplyTo: Long) =
         this.botInstace.sendAnimation(chatId, TelegramFile.ByFileId(fileId), replyToMessageId = inReplyTo)
-    }
+
+    private fun sendAudio(chatId: ChatId, fileId: String, inReplyTo: Long) =
+        this.botInstace.sendAudio(chatId, TelegramFile.ByFileId(fileId), replyToMessageId = inReplyTo)
+
+    private fun sendSticker(chatId: ChatId, fileId: String, inReplyTo: Long) =
+        this.botInstace.sendSticker(chatId, fileId, replyToMessageId = inReplyTo, replyMarkup = null)
+
+    private fun sendVoice(chatId: ChatId, fileId: String, inReplyTo: Long) =
+        this.botInstace.sendVoice(chatId, TelegramFile.ByFileId(fileId), replyToMessageId = inReplyTo)
+
+    private fun sendPhoto(chatId: ChatId, fileId: String, inReplyTo: Long) =
+        this.botInstace.sendPhoto(chatId, TelegramFile.ByFileId(fileId), replyToMessageId = inReplyTo)
+
+    private fun sendVideo(chatId: ChatId, fileId: String, inReplyTo: Long) =
+        this.botInstace.sendVideo(chatId, TelegramFile.ByFileId(fileId), replyToMessageId = inReplyTo)
+
+    private fun sendVideoNote(chatId: ChatId, fileId: String, inReplyTo: Long) =
+        this.botInstace.sendVideoNote(chatId, TelegramFile.ByFileId(fileId), replyToMessageId = inReplyTo)
 }

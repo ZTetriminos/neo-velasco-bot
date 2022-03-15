@@ -8,7 +8,9 @@ import com.github.kotlintelegrambot.entities.MessageEntity
 import com.github.kotlintelegrambot.entities.User
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.regex.Pattern
 import kotlin.math.pow
+import kotlin.text.Regex.Companion.escape
 
 val MarkovChain.wordCounts: Map<String, Int> get() {
     val map = hashMapOf<String, Int>()
@@ -17,7 +19,7 @@ val MarkovChain.wordCounts: Map<String, Int> get() {
         for ((word, count) in dataMap) {
             val sanitized = word.sanitize()
 
-            if (!word.isGif() && sanitized.isNotBlank())
+            if (!word.isMedia() && sanitized.isNotBlank())
                 map.compute(sanitized.lowercase()) { _, n -> n?.plus(count) ?: count }
         }
 
@@ -33,6 +35,29 @@ const val ANSI_BLACK = "\u001B[30m"
 const val ANSI_RED = "\u001B[31m"
 const val ANSI_GREEN = "\u001B[32m"
 const val ANSI_YELLOW = "\u001B[33m"
+const val ANSI_BLUE = "\u001B[34m"
+const val ANSI_PURPLE = "\u001B[35m"
+const val ANSI_CYAN = "\u001B[36m"
+const val ANSI_WHITE = "\u001B[37m"
+
+private val GIF_BRACKETS = Pair("[GIF]", "[/GIF]")
+private val STICKER_BRACKETS = Pair("[STICKER]", "[/STICKER]")
+private val VIDEO_BRACKETS = Pair("[VIDEO]", "[/VIDEO]")
+private val AUDIO_BRACKETS = Pair("[AUDIO]", "[/AUDIO]")
+private val VOICE_BRACKETS = Pair("[VOICE]", "[/VOICE]")
+private val PHOTO_BRACKETS = Pair("[PHOTO]", "[/PHOTO]")
+private val VIDEO_NOTE_BRACKETS = Pair("[VIDEO_NOTE]", "[/VIDEO_NOTE]")
+enum class MessageType { GIF, STICKER, VIDEO, AUDIO, VOICE, PHOTO, VIDEO_NOTE }
+
+private val BRACKETS_MAP = mapOf(
+    Pair(MessageType.GIF, GIF_BRACKETS),
+    Pair(MessageType.STICKER, STICKER_BRACKETS),
+    Pair(MessageType.VIDEO, VIDEO_BRACKETS),
+    Pair(MessageType.AUDIO, AUDIO_BRACKETS),
+    Pair(MessageType.VOICE, VOICE_BRACKETS),
+    Pair(MessageType.PHOTO, PHOTO_BRACKETS),
+    Pair(MessageType.VIDEO_NOTE, VIDEO_NOTE_BRACKETS)
+)
 
 private const val punctuation = "[`~!@#$%^&*()\\-_=+\\[\\],<.>/?\\\\|;:\"]+"
 
@@ -71,7 +96,7 @@ private fun String.sanitize(): String =
 fun log(s: String) {
     val timestamp = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
 
-    println("${ANSI_YELLOW}$timestamp: ${s}$ANSI_RESET")
+    println("${ANSI_PURPLE}$timestamp: ${s}$ANSI_RESET")
 }
 
 fun log(t: Throwable) {
@@ -131,7 +156,7 @@ fun MessageEntity.isMention(): Boolean =
 fun createInlineMention(text: String, userId: String): String = "[$text](tg://user?id=$userId)"
 
 fun isAdmin(bot: Bot, chatId: ChatId, userId: Long): Boolean =
-    bot.getChatMember(chatId, userId).get().status == "creator"
+    bot.getChatMember(chatId, userId).get().status.matches(Regex("creator|administrator"))
 
 fun isCreator(bot: Bot, chatId: ChatId, userId: Long): Boolean =
     bot.getChatMember(chatId, userId).get().status == "creator"
@@ -139,8 +164,39 @@ fun isCreator(bot: Bot, chatId: ChatId, userId: Long): Boolean =
 fun matchesCommand(text: String, command: String, botUsername: String): Boolean =
     text == "/$command" || text == "/$command@$botUsername"
 
-fun String.gifIdToMarkovString(): String = "[GIF]$this[/GIF]"
+fun String.toMarkovString(type: MessageType): String {
+    val brackets = BRACKETS_MAP[type]
 
-fun String.isGif(): Boolean = this.contains(Regex("^\\[GIF](.*)\\[/GIF]\$"))
+    return if(brackets != null)
+        "${brackets.first}${this}${brackets.second}"
+    else
+        this
+}
 
-fun String.removeGifPrefixSufix(): String = this.replace(Regex("^\\[GIF]|\\[/GIF]\$"), "")
+fun String.isMedia(type: MessageType): Boolean {
+    val brackets = BRACKETS_MAP[type]
+
+    if(brackets != null) {
+        val regex = Regex("^${escape(brackets.first)}(.*)${escape(brackets.second)}\$")
+
+        return this.contains(regex)
+    }
+
+    return false
+}
+
+fun String.isMedia(): Boolean = BRACKETS_MAP.keys.count { this.isMedia(it) } > 0
+
+fun String.getMediaType(): MessageType? = BRACKETS_MAP.keys.find { this.isMedia(it) }
+
+fun String.removeBrackets(type: MessageType): String {
+    val brackets = BRACKETS_MAP[type]
+    log("Detected this brackets")
+    if(brackets != null) {
+        val regex = Regex("^${Pattern.quote(brackets.first)}|${Pattern.quote(brackets.second)}\$")
+        log("This is the resulting regex: $regex")
+        return this.replace(regex, "")
+    }
+
+    return this
+}
