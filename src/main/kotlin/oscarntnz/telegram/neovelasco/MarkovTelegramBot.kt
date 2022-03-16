@@ -139,6 +139,9 @@ class MarkovTelegramBot(private val token: String, private val botPort: Int,
 
         from.username?.let { tryOrLog { markovFunctions.storeUsername(it, senderId) } }
 
+        if(message.caption != null)
+            handleMessage(message, chatId, from, senderId, message.caption!!)
+
         if (message.text != null)
             handleMessage(message, chatId, from, senderId, message.text!!)
         else if(message.animation != null)

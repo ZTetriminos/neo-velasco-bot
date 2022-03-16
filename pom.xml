@@ -23,6 +23,7 @@
         <heroku.version>3.0.3</heroku.version>
         <maven-assembly.version>3.3.0</maven-assembly.version>
         <main.class>oscarntnz.telegram.neovelasco.MarkovTelegramBot</main.class>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
     <repositories>
