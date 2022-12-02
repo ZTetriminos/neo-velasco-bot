@@ -1,0 +1,10 @@
+{
+    "telegramBotToken": "5943449630:AAHsmQcAGt2fJHets-pjvuNCjn17mvDEKrg",
+    "webhookURL": "https://phobetor-bot-production.up.railway.app/",
+    "databaseName": "Cluster0",
+    "replyFrecuence": 90,
+    "chatFrecuence": 30,
+    "ownerChatId": 239208336,
+    "ownerId": 239208336,
+    "insults": ["Nomura."]
+  }
